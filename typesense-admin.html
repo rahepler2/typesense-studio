@@ -419,6 +419,7 @@ const HI = {
   sun:            `<path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/>`,
   moon:           `<path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/>`,
   computer:       `<path stroke-linecap="round" stroke-linejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>`,
+  arrowsRightLeft:`<path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-9L21 7.5m0 0L16.5 3M21 7.5H7.5"/>`,
 };
 
 const THEME_KEY = 'ts_studio_theme';
@@ -504,6 +505,7 @@ const API = {
   },
   get:   p      => API.req('GET',    p),
   post:  (p, b) => API.req('POST',   p, b),
+  put:   (p, b) => API.req('PUT',    p, b),
   del:   p      => API.req('DELETE', p),
   safe:  p      => API.get(p).catch(() => null),
 
@@ -523,6 +525,7 @@ const S = {
   savedConns: Connections.load(),
   activeConnName: '',      
   collections: [], aliases: [], apiKeys: [],
+  synonyms: null, synonymsLoading: false,
   health: null, stats: null,
 
   nav: null, tab: 'browse',
@@ -667,7 +670,7 @@ const disconnect = () => {
 };
 
 async function selectColl(name) {
-  set({ nav: name, tab: 'browse', query: '', results: null, page: 1 });
+  set({ nav: name, tab: 'browse', query: '', results: null, page: 1, synonyms: null, synonymsLoading: false });
   await doSearch();
 }
 
@@ -726,6 +729,34 @@ async function delAlias(name) {
     await API.del(`/aliases/${name}`);
     set({ aliases: (await API.safe('/aliases'))?.aliases || [] });
     toast(`Alias "${name}" deleted`, 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function loadSynonyms(name) {
+  if (!name || name.startsWith('__')) return;
+  set({ synonymsLoading: true });
+  try {
+    const r = await API.get(`/collections/${encodeURIComponent(name)}/synonyms`);
+    set({ synonyms: r?.synonyms || [], synonymsLoading: false });
+  } catch (e) { set({ synonyms: [], synonymsLoading: false }); toast(e.message, 'err'); }
+}
+
+async function createSynonym(id, root, words) {
+  try {
+    const body = root ? { root, synonyms: words } : { synonyms: words };
+    await API.put(`/collections/${encodeURIComponent(S.nav)}/synonyms/${encodeURIComponent(id)}`, body);
+    set({ modal: null });
+    await loadSynonyms(S.nav);
+    toast(`Synonym "${id}" saved`, 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function delSynonym(id) {
+  if (!confirm(`Delete synonym "${id}"?`)) return;
+  try {
+    await API.del(`/collections/${encodeURIComponent(S.nav)}/synonyms/${encodeURIComponent(id)}`);
+    await loadSynonyms(S.nav);
+    toast(`Synonym "${id}" deleted`, 'ok');
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -1029,17 +1060,18 @@ const buildCollView = () => {
   const coll = S.collections.find(c => c.name === S.nav);
   return `
   <div class="tabs">
-    ${[['browse','Browse'],['schema','Schema'],['import','Import / Export'],['raw','Raw JSON']].map(([id, lbl]) =>
+    ${[['browse','Browse'],['schema','Schema'],['synonyms','Synonyms'],['import','Import / Export'],['raw','Raw JSON']].map(([id, lbl]) =>
       `<div class="tab ${S.tab===id?'active':''}" data-tab="${id}">${lbl}</div>`).join('')}
     <div class="tabs-meta">
       <span style="font-size:.75rem;font-weight:600;color:var(--tx3)">${esc(S.nav)}</span>
       <span class="badge bz">${num(coll?.num_documents)} docs</span>
     </div>
   </div>
-  ${S.tab==='browse' ? buildBrowse(coll) : ''}
-  ${S.tab==='schema' ? buildSchema(coll) : ''}
-  ${S.tab==='import' ? buildImport()     : ''}
-  ${S.tab==='raw'    ? buildRaw(coll)    : ''}`;
+  ${S.tab==='browse'   ? buildBrowse(coll)   : ''}
+  ${S.tab==='schema'   ? buildSchema(coll)   : ''}
+  ${S.tab==='synonyms' ? buildSynonyms(coll) : ''}
+  ${S.tab==='import'   ? buildImport()       : ''}
+  ${S.tab==='raw'      ? buildRaw(coll)      : ''}`;
 };
 
 const buildBrowse = coll => {
@@ -1159,6 +1191,50 @@ const buildSchema = coll => {
       </div>
     </div>`).join('')}
   </div>
+</div>`;
+};
+
+const buildSynonyms = coll => {
+  if (!coll) return `<div class="scroll"><div class="loading"><div class="spin"></div>Loading…</div></div>`;
+  const syns = S.synonyms;
+  return `
+<div class="scroll">
+  <div class="ph">
+    <div>
+      <div class="ph-title">${hi('arrowsRightLeft')} Synonyms</div>
+      <div class="ph-meta">Search-time word equivalences for <strong>${esc(coll.name)}</strong></div>
+    </div>
+    <button class="btn btn-primary btn-sm" id="btn-new-synonym">${hi('plus')} Add Synonym</button>
+  </div>
+
+  ${S.synonymsLoading
+    ? `<div class="loading"><div class="spin"></div>Loading synonyms…</div>`
+    : (!syns || syns.length === 0
+      ? `<div class="tbl-wrap"><table>
+          <thead><tr><th>ID</th><th>Type</th><th>Mapping</th><th style="text-align:right">Actions</th></tr></thead>
+          <tbody><tr><td colspan="4"><div class="empty" style="padding:40px">
+            <div class="eico">${hi('arrowsRightLeft','',40)}</div>
+            <div class="etitle">No synonyms configured</div>
+            <p class="esub">Synonyms let queries match equivalent words — e.g. <code>nyc</code> ↔ <code>new york</code>.</p>
+          </div></td></tr></tbody>
+        </table></div>`
+      : `<div class="tbl-wrap"><table>
+          <thead><tr><th>ID</th><th>Type</th><th>Mapping</th><th style="text-align:right">Actions</th></tr></thead>
+          <tbody>
+            ${syns.map(s => `
+            <tr>
+              <td class="mono">${esc(s.id)}</td>
+              <td>${s.root ? `<span class="badge bs">one-way</span>` : `<span class="badge bv">multi-way</span>`}</td>
+              <td><div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;white-space:normal">
+                ${s.root ? `<span class="mono" style="font-weight:600">${esc(s.root)}</span><span style="color:var(--tx3)">→</span>` : ''}
+                ${(s.synonyms||[]).map(w=>`<span class="badge bz">${esc(w)}</span>`).join('')}
+              </div></td>
+              <td style="text-align:right">
+                <button class="btn btn-dg btn-xs" data-del-synonym="${esc(s.id)}">${hi('trash','',14)} Delete</button>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table></div>`)}
 </div>`;
 };
 
@@ -1326,6 +1402,34 @@ const buildModal = () => {
     </div>`;
   }
 
+  else if (S.modal === 'newSynonym') {
+    body = `
+    <div class="mhd">
+      <div><div class="mtitle">Add Synonym</div><div class="msub">For ${esc(S.nav)}</div></div>
+      <button class="btn btn-ghost btn-icon" id="mc">${hi('xMark')}</button>
+    </div>
+    <div class="mbd">
+      <div class="alert al-i">${hi('infoCircle')} <span>Leave <strong>Root word</strong> blank for a <strong>multi-way</strong> synonym (all words interchangeable). Fill it in for a <strong>one-way</strong> synonym (queries for the listed words also match the root).</span></div>
+      <div class="fg">
+        <label class="fl">Synonym ID</label>
+        <input class="inp" id="syn-id" placeholder="e.g. coat-synonyms">
+      </div>
+      <div class="fg">
+        <label class="fl">Root word <span style="color:var(--tx3)">(optional — one-way only)</span></label>
+        <input class="inp" id="syn-root" placeholder="e.g. blazer">
+      </div>
+      <div class="fg">
+        <label class="fl">Synonyms</label>
+        <textarea class="ta" id="syn-words" rows="3" placeholder="coat, jacket, overcoat"></textarea>
+        <span style="font-size:.75rem;color:var(--tx3)">Separate words/phrases with commas or new lines.</span>
+      </div>
+    </div>
+    <div class="mft">
+      <button class="btn btn-secondary" id="mcancel">Cancel</button>
+      <button class="btn btn-primary"   id="mcreate-synonym">${hi('check')} Save Synonym</button>
+    </div>`;
+  }
+
   else if (S.modal === 'saveConn') {
     body = `
     <div class="mhd">
@@ -1407,7 +1511,11 @@ const bindEvents = () => {
     else await selectColl(v);
   });
 
-  all('[data-tab]', 'click', e => set({ tab: e.currentTarget.dataset.tab }));
+  all('[data-tab]', 'click', e => {
+    const tab = e.currentTarget.dataset.tab;
+    set({ tab });
+    if (tab === 'synonyms' && S.synonyms === null && !S.synonymsLoading) loadSynonyms(S.nav);
+  });
 
   on($('btn-new-coll'),  'click', e => { e.stopPropagation(); set({ modal: 'newColl', mdata: {} }); });
   on($('btn-new-coll2'), 'click', () => set({ modal: 'newColl', mdata: {} }));
@@ -1440,6 +1548,9 @@ const bindEvents = () => {
   on($('btn-new-alias'), 'click', () => set({ modal: 'newAlias', mdata: {} }));
   all('[data-del-alias]', 'click', e => delAlias(e.currentTarget.dataset.delAlias));
 
+  on($('btn-new-synonym'), 'click', () => set({ modal: 'newSynonym', mdata: {} }));
+  all('[data-del-synonym]', 'click', e => delSynonym(e.currentTarget.dataset.delSynonym));
+
   on($('btn-load-keys'), 'click', async () => {
     try { const r = await API.get('/keys'); set({ apiKeys: r?.keys || [] }); }
     catch (e) { toast(e.message, 'err'); }
@@ -1464,6 +1575,14 @@ const bindEvents = () => {
     const name = $('alias-name')?.value.trim();
     if (!name) { toast('Alias name is required', 'err'); return; }
     createAlias(name, $('alias-coll')?.value);
+  });
+  on($('mcreate-synonym'), 'click', () => {
+    const id = $('syn-id')?.value.trim();
+    if (!id) { toast('Synonym ID is required', 'err'); return; }
+    const root = $('syn-root')?.value.trim() || '';
+    const words = ($('syn-words')?.value || '').split(/[,\n]/).map(w => w.trim()).filter(Boolean);
+    if (!words.length) { toast('Add at least one synonym word', 'err'); return; }
+    createSynonym(id, root, words);
   });
   on($('msave-conn'), 'click', () => {
     const name = $('conn-name')?.value.trim();
