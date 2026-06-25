@@ -521,11 +521,13 @@ const typeBadge = t => {
     float:'bs','float[]':'bs',bool:'bv','bool[]':'bv',
     object:'bg','object[]':'bg',auto:'bz',image:'br',
   };
-  return `<span class="badge ${m[t]||'bz'}">${t}</span>`;
+  return `<span class="badge ${m[t]||'bz'}">${esc(t)}</span>`;
 };
 
 const jsonHL = obj =>
-  JSON.stringify(obj, null, 2).replace(
+  JSON.stringify(obj, null, 2)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(
     /("(?:\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(?:\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g,
     m => /^"/.test(m) ? (/:$/.test(m) ? `<span class="jk">${m}</span>` : `<span class="js">${m}</span>`)
        : /true|false/.test(m) ? `<span class="jb">${m}</span>`
@@ -649,20 +651,27 @@ async function importDocs(raw, action) {
   let docs;
   try { docs = raw.trim().startsWith('[') ? JSON.parse(raw) : raw.trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); }
   catch { toast('Invalid JSON — check your input', 'err'); return; }
-  const res  = await API.ndPost(`/collections/${encodeURIComponent(S.nav)}/documents/import?action=${encodeURIComponent(action)}`, docs);
-  const lines = res.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return {}; } });
-  const ok   = lines.filter(l => l.success).length;
-  toast(`${ok} / ${lines.length} documents imported`, ok === lines.length ? 'ok' : 'inf');
-  await doSearch(1);
+  if (!docs.length) { toast('Nothing to import — input is empty', 'err'); return; }
+  try {
+    const res  = await API.ndPost(`/collections/${encodeURIComponent(S.nav)}/documents/import?action=${encodeURIComponent(action)}`, docs);
+    const lines = res.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return {}; } });
+    const ok   = lines.filter(l => l.success).length;
+    toast(`${ok} / ${lines.length} documents imported`, ok === lines.length ? 'ok' : 'inf');
+    await doSearch(1);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  Object.assign(document.createElement('a'), { href: url, download: filename }).click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function exportAll() {
   try {
     const r = await fetch(API.url(`/collections/${encodeURIComponent(S.nav)}/documents/export`), { headers: API.hdr() });
-    Object.assign(document.createElement('a'), {
-      href: URL.createObjectURL(new Blob([await r.text()], { type: 'application/x-ndjson' })),
-      download: `${S.nav.replace(/[^a-zA-Z0-9_-]/g,"_")}.ndjson`,
-    }).click();
+    if (!r.ok) throw new Error(await r.text().catch(() => `HTTP ${r.status}`));
+    downloadBlob(new Blob([await r.text()], { type: 'application/x-ndjson' }), `${S.nav.replace(/[^a-zA-Z0-9_-]/g,"_")}.ndjson`);
     toast('Export started', 'ok');
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -670,10 +679,7 @@ async function exportAll() {
 function exportResults() {
   const docs = (S.results?.hits || []).map(h => h.document);
   if (!docs.length) { toast('No results to export', 'inf'); return; }
-  Object.assign(document.createElement('a'), {
-    href: URL.createObjectURL(new Blob([JSON.stringify(docs, null, 2)], { type: 'application/json' })),
-    download: `${S.nav.replace(/[^a-zA-Z0-9_-]/g,"_")}-results.json`,
-  }).click();
+  downloadBlob(new Blob([JSON.stringify(docs, null, 2)], { type: 'application/json' }), `${S.nav.replace(/[^a-zA-Z0-9_-]/g,"_")}-results.json`);
 }
 
 const render = () => {
@@ -868,7 +874,7 @@ const buildOverview = () => {
           <td class="mono">${c.created_at ? new Date(c.created_at*1000).toLocaleDateString() : '—'}</td>
           <td style="text-align:right">
             <div class="td-actions" style="justify-content:flex-end">
-              <button class="btn btn-ghost btn-xs" data-nav="${esc(c.name)}">${hi('tableCell','',14)} Browse</button>
+              <button class="btn btn-ghost btn-xs" data-nav="${esc(c.name)}">${hi('tableCells','',14)} Browse</button>
               <button class="btn btn-dg btn-xs btn-icon" data-del-coll="${esc(c.name)}" title="Delete">${hi('trash','',14)}</button>
             </div>
           </td>
@@ -927,10 +933,10 @@ const buildKeysPage = () => `
         <tbody>
           ${S.apiKeys.map(k => `
           <tr>
-            <td class="mono">${k.id}</td>
-            <td style="font-weight:500">${k.description||'—'}</td>
-            <td><div style="display:flex;flex-wrap:wrap;gap:3px">${(k.actions||[]).map(a=>`<span class="badge bi">${a}</span>`).join('')}</div></td>
-            <td><div style="display:flex;flex-wrap:wrap;gap:3px">${(k.collections||[]).map(c=>`<span class="badge bz">${c}</span>`).join('')}</div></td>
+            <td class="mono">${esc(k.id)}</td>
+            <td style="font-weight:500">${k.description?esc(k.description):'—'}</td>
+            <td><div style="display:flex;flex-wrap:wrap;gap:3px">${(k.actions||[]).map(a=>`<span class="badge bi">${esc(a)}</span>`).join('')}</div></td>
+            <td><div style="display:flex;flex-wrap:wrap;gap:3px">${(k.collections||[]).map(c=>`<span class="badge bz">${esc(c)}</span>`).join('')}</div></td>
             <td class="mono">${k.expires_at ? new Date(k.expires_at*1000).toLocaleDateString() : 'Never'}</td>
           </tr>`).join('')}
         </tbody>
@@ -971,7 +977,7 @@ const buildBrowse = coll => {
     ${cols.length ? `
     <select class="sel" id="sf" style="width:140px">
       <option value="">Sort by…</option>
-      ${cols.map(f=>`<option value="${f}" ${S.sortField===f?'selected':''}>${f}</option>`).join('')}
+      ${cols.map(f=>`<option value="${esc(f)}" ${S.sortField===f?'selected':''}>${esc(f)}</option>`).join('')}
     </select>
     <select class="sel" id="sd" style="width:90px">
       <option value="asc"  ${S.sortDir==='asc' ?'selected':''}>ASC ↑</option>
@@ -1002,7 +1008,7 @@ const buildBrowse = coll => {
   ${!S.loading && docs.length > 0 ? `
   <div class="tbl-wrap">
     <table>
-      <thead><tr><th style="width:36px">#</th>${cols.map(c=>`<th>${c}</th>`).join('')}<th style="text-align:right">Actions</th></tr></thead>
+      <thead><tr><th style="width:36px">#</th>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}<th style="text-align:right">Actions</th></tr></thead>
       <tbody>
         ${docs.map((doc, i) => `
         <tr>
@@ -1011,14 +1017,14 @@ const buildBrowse = coll => {
             const v = doc[f];
             const d = v == null ? `<span class="null-v">null</span>`
               : typeof v === 'object' ? `<span class="obj-v">[${Array.isArray(v)?'array':'object'}]</span>`
-              : (s => s.length > 55 ? s.slice(0,55)+'…' : s)(String(v));
-            return `<td title="${String(v??'')}">${d}</td>`;
+              : (s => esc(s.length > 55 ? s.slice(0,55)+'…' : s))(String(v));
+            return `<td title="${esc(String(v??''))}">${d}</td>`;
           }).join('')}
           <td>
             <div class="td-actions" style="justify-content:flex-end">
-              <button class="btn btn-ghost btn-xs btn-icon" title="View"   data-view='${JSON.stringify(doc).replace(/'/g,"&#39;")}'>${hi('eye','',15)}</button>
-              <button class="btn btn-ghost btn-xs btn-icon" title="Edit"   data-edit='${JSON.stringify(doc).replace(/'/g,"&#39;")}'>${hi('pencil','',15)}</button>
-              <button class="btn btn-dg    btn-xs btn-icon" title="Delete" data-del="${doc.id}">${hi('trash','',15)}</button>
+              <button class="btn btn-ghost btn-xs btn-icon" title="View"   data-view='${esc(JSON.stringify(doc))}'>${hi('eye','',15)}</button>
+              <button class="btn btn-ghost btn-xs btn-icon" title="Edit"   data-edit='${esc(JSON.stringify(doc))}'>${hi('pencil','',15)}</button>
+              <button class="btn btn-dg    btn-xs btn-icon" title="Delete" data-del="${esc(doc.id)}">${hi('trash','',15)}</button>
             </div>
           </td>
         </tr>`).join('')}
@@ -1044,7 +1050,7 @@ const buildSchema = coll => {
         <span>${num(coll.num_documents)} documents</span>
         <span class="ph-dot"></span>
         <span>${(coll.fields||[]).length} fields</span>
-        ${coll.default_sorting_field ? `<span class="ph-dot"></span><span>default sort: <strong>${coll.default_sorting_field}</strong></span>` : ''}
+        ${coll.default_sorting_field ? `<span class="ph-dot"></span><span>default sort: <strong>${esc(coll.default_sorting_field)}</strong></span>` : ''}
       </div>
     </div>
     <button class="btn btn-dg btn-sm" data-del-coll="${esc(coll.name)}">${hi('trash')} Delete Collection</button>
@@ -1144,7 +1150,7 @@ const buildModal = () => {
   else if (S.modal === 'viewDoc') {
     body = `
     <div class="mhd">
-      <div><div class="mtitle">Document</div><div class="msub">id: ${S.mdata.doc?.id ?? '—'}</div></div>
+      <div><div class="mtitle">Document</div><div class="msub">id: ${esc(S.mdata.doc?.id ?? '—')}</div></div>
       <button class="btn btn-ghost btn-icon" id="mc">${hi('xMark')}</button>
     </div>
     <div class="mbd"><div class="code">${jsonHL(S.mdata.doc)}</div></div>
@@ -1311,7 +1317,6 @@ const bindEvents = () => {
   on($('mc'),      'click', closeModal);
   on($('mcancel'), 'click', closeModal);
   on($('overlay'), 'click', e => e.target.id === 'overlay' && closeModal());
-  document.addEventListener('keydown', e => e.key === 'Escape' && S.modal && closeModal(), { once: true });
 
   on($('msave'),          'click', () => upsertDoc($('doc-json')?.value || ''));
   on($('mcreate-coll'),   'click', () => createColl($('schema-json')?.value || ''));
@@ -1326,6 +1331,9 @@ const bindEvents = () => {
   });
   on($('conn-name'), 'keydown', e => e.key === 'Enter' && $('msave-conn')?.click());
 };
+
+// Global Escape-to-close — attached once, reads S.modal dynamically.
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.modal) set({ modal: null }); });
 
 render();
 </script>
