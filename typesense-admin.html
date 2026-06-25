@@ -347,6 +347,40 @@ html { transition: background-color .25s ease, color .25s ease; }
 body, .topbar, .sidebar, .card, .modal, .stat, .tbl-wrap, table, .ccard, .conn-card {
   transition: background-color .25s ease, border-color .25s ease, color .2s ease;
 }
+
+/* ─── Per-cell field view ────────────────────────────────── */
+td.cell{position:relative;}
+.cell-view{position:absolute;right:5px;top:50%;transform:translateY(-50%);opacity:0;
+  background:var(--sur);box-shadow:var(--sh0);transition:opacity var(--t);}
+tbody tr:hover .cell-view{opacity:.85;}
+.cell-view:hover{opacity:1;}
+
+/* ─── Field viewer modal ─────────────────────────────────── */
+.fv-toolbar{display:flex;align-items:center;gap:6px;margin-bottom:4px;}
+.fv-seg{display:inline-flex;background:var(--g100);border:1px solid var(--bd);border-radius:7px;padding:2px;gap:2px;}
+.fv-seg button{border:none;background:transparent;color:var(--tx2);font:inherit;font-size:.75rem;font-weight:500;
+  padding:3px 10px;border-radius:5px;cursor:pointer;transition:all var(--t);}
+.fv-seg button.on{background:var(--sur);color:var(--ac);box-shadow:var(--sh0);}
+.text-body{white-space:pre-wrap;word-break:break-word;font-family:var(--font);font-size:.875rem;line-height:1.6;
+  color:var(--tx);max-height:58vh;overflow:auto;background:var(--g50);border:1px solid var(--bd);border-radius:8px;padding:14px;}
+.md-body{font-size:.875rem;line-height:1.6;color:var(--tx);max-height:58vh;overflow:auto;word-break:break-word;
+  background:var(--g50);border:1px solid var(--bd);border-radius:8px;padding:14px;}
+.md-body h1,.md-body h2,.md-body h3,.md-body h4,.md-body h5,.md-body h6{font-weight:600;line-height:1.25;margin:.7em 0 .35em;}
+.md-body h1{font-size:1.3rem;}.md-body h2{font-size:1.15rem;}.md-body h3{font-size:1.05rem;}
+.md-body h4,.md-body h5,.md-body h6{font-size:1rem;}
+.md-body p{margin:.45em 0;}
+.md-body ul,.md-body ol{margin:.45em 0 .45em 1.5em;}
+.md-body li{margin:.15em 0;}
+.md-body blockquote{border-left:3px solid var(--bd2);padding:.1em 0 .1em 12px;color:var(--tx2);margin:.5em 0;}
+.md-body a{color:var(--ac);text-decoration:underline;}
+.md-body code{font-family:'Menlo','Consolas',monospace;background:var(--i50);color:var(--i700);padding:1px 5px;border-radius:4px;font-size:.85em;}
+.md-body pre,.md-pre{background:var(--g900);color:#e2e8f0;border-radius:8px;padding:12px;overflow:auto;margin:.5em 0;
+  font-family:'Menlo','Consolas',monospace;font-size:.8125rem;line-height:1.55;white-space:pre-wrap;word-break:break-word;}
+.md-body pre code,.md-pre code{background:none;color:inherit;padding:0;}
+html[data-theme="dark"] .md-body code,html[data-theme="system"].sys-dark .md-body code{background:var(--i100);color:#a5b4fc;}
+.fv-collapsed{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:18px;
+  background:var(--g50);border:1px dashed var(--bd2);border-radius:8px;}
+.fv-collapsed .fv-meta{font-family:'Menlo','Consolas',monospace;font-size:.8125rem;color:var(--tx2);}
 </style>
 </head>
 <body>
@@ -533,6 +567,54 @@ const jsonHL = obj =>
        : /true|false/.test(m) ? `<span class="jb">${m}</span>`
        : /null/.test(m) ? `<span class="jnl">${m}</span>` : `<span class="jn">${m}</span>`
   );
+
+// Minimal, XSS-safe Markdown renderer. Input is HTML-escaped FIRST, then a
+// limited set of known-safe tags are introduced — so embedded HTML in the
+// source can never execute. Link hrefs are restricted to safe schemes.
+const mdRender = src => {
+  const inline = t => t
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|\W)\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/(^|\W)_([^_\n]+)_/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, u) =>
+      /^(https?:|mailto:|#|\/)/i.test(u) ? `<a href="${u}" target="_blank" rel="noopener noreferrer">${txt}</a>` : txt);
+
+  const lines = esc(src).replace(/\r\n?/g, '\n').split('\n');
+  const out = []; let inUl = false, inOl = false, inCode = false, code = [];
+  const closeLists = () => { if (inUl) { out.push('</ul>'); inUl = false; } if (inOl) { out.push('</ol>'); inOl = false; } };
+  for (const ln of lines) {
+    if (/^```/.test(ln)) {
+      if (inCode) { out.push(`<pre class="md-pre"><code>${code.join('\n')}</code></pre>`); code = []; inCode = false; }
+      else { closeLists(); inCode = true; }
+      continue;
+    }
+    if (inCode) { code.push(ln); continue; }
+    let m;
+    if (m = ln.match(/^(#{1,6})\s+(.*)$/)) { closeLists(); const l = m[1].length; out.push(`<h${l}>${inline(m[2])}</h${l}>`); }
+    else if (m = ln.match(/^\s*[-*+]\s+(.*)$/)) { if (inOl) { out.push('</ol>'); inOl = false; } if (!inUl) { out.push('<ul>'); inUl = true; } out.push(`<li>${inline(m[1])}</li>`); }
+    else if (m = ln.match(/^\s*\d+\.\s+(.*)$/)) { if (inUl) { out.push('</ul>'); inUl = false; } if (!inOl) { out.push('<ol>'); inOl = true; } out.push(`<li>${inline(m[1])}</li>`); }
+    else if (m = ln.match(/^>\s?(.*)$/)) { closeLists(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); }
+    else if (ln.trim() === '') { closeLists(); }
+    else { closeLists(); out.push(`<p>${inline(ln)}</p>`); }
+  }
+  if (inCode) out.push(`<pre class="md-pre"><code>${code.join('\n')}</code></pre>`);
+  closeLists();
+  return out.join('\n');
+};
+
+// Human-readable type label for a value, preferring the collection's declared
+// schema type (e.g. "float[768]" rather than "number[768]").
+const fieldTypeLabel = (field, value) => {
+  const declared = (S.collections.find(c => c.name === S.nav)?.fields || []).find(f => f.name === field)?.type;
+  if (Array.isArray(value)) {
+    const base = declared ? declared.replace(/\[\]$/, '') : (value.length ? typeof value[0] : 'empty');
+    return `${base}[${value.length}]`;
+  }
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  return declared || typeof value;
+};
 
 const qfields = name => {
   const c = S.collections.find(x => x.name === name);
@@ -1016,9 +1098,10 @@ const buildBrowse = coll => {
           ${cols.map(f => {
             const v = doc[f];
             const d = v == null ? `<span class="null-v">null</span>`
-              : typeof v === 'object' ? `<span class="obj-v">[${Array.isArray(v)?'array':'object'}]</span>`
+              : typeof v === 'object' ? `<span class="obj-v">[${Array.isArray(v)?`array · ${v.length}`:'object'}]</span>`
               : (s => esc(s.length > 55 ? s.slice(0,55)+'…' : s))(String(v));
-            return `<td title="${esc(String(v??''))}">${d}</td>`;
+            const btn = v == null ? '' : `<button class="cell-view btn btn-ghost btn-xs btn-icon" data-vf="${esc(f)}" data-vi="${i}" title="View ${esc(f)}">${hi('eye','',13)}</button>`;
+            return `<td class="cell" title="${esc(String(v??''))}">${d}${btn}</td>`;
           }).join('')}
           <td>
             <div class="td-actions" style="justify-content:flex-end">
@@ -1154,6 +1237,48 @@ const buildModal = () => {
       <button class="btn btn-ghost btn-icon" id="mc">${hi('xMark')}</button>
     </div>
     <div class="mbd"><div class="code">${jsonHL(S.mdata.doc)}</div></div>
+    <div class="mft"><button class="btn btn-secondary" id="mcancel">Close</button></div>`;
+  }
+
+  else if (S.modal === 'fieldView') {
+    const { field, value, md, expanded } = S.mdata;
+    const type = fieldTypeLabel(field, value);
+    let content;
+    if (typeof value === 'string') {
+      content = md ? `<div class="md-body">${mdRender(value)}</div>`
+                   : `<div class="text-body">${esc(value)}</div>`;
+    } else if (Array.isArray(value)) {
+      content = expanded
+        ? `<div class="code">${jsonHL(value)}</div>`
+        : `<div class="fv-collapsed">
+             <span class="fv-meta">${esc(type)}</span>
+             <button class="btn btn-secondary btn-sm" id="fv-expand">${hi('eye','',14)} Expand array</button>
+           </div>`;
+    } else if (value !== null && typeof value === 'object') {
+      content = `<div class="code">${jsonHL(value)}</div>`;
+    } else {
+      content = `<div class="text-body">${esc(String(value))}</div>`;
+    }
+
+    const isStr = typeof value === 'string';
+    body = `
+    <div class="mhd">
+      <div>
+        <div class="mtitle">${esc(field)}</div>
+        <div class="msub">${esc(type)}${S.mdata.doc?.id != null ? ` · doc ${esc(String(S.mdata.doc.id))}` : ''}</div>
+      </div>
+      <button class="btn btn-ghost btn-icon" id="mc">${hi('xMark')}</button>
+    </div>
+    <div class="mbd">
+      <div class="fv-toolbar">
+        ${isStr ? `<div class="fv-seg">
+          <button class="${md?'':'on'}" id="fv-plain">Text</button>
+          <button class="${md?'on':''}" id="fv-md">Markdown</button>
+        </div>` : ''}
+        <button class="btn btn-ghost btn-sm btn-icon" id="fv-copy" title="Copy value" style="margin-left:auto">${hi('arrowDownTray','',15)}</button>
+      </div>
+      ${content}
+    </div>
     <div class="mft"><button class="btn btn-secondary" id="mcancel">Close</button></div>`;
   }
 
@@ -1298,6 +1423,12 @@ const bindEvents = () => {
   on($('btn-add-doc'), 'click', () => set({ modal: 'addDoc', mdata: {} }));
   all('[data-view]', 'click', e => set({ modal: 'viewDoc', mdata: { doc: JSON.parse(e.currentTarget.dataset.view) } }));
   all('[data-edit]', 'click', e => set({ modal: 'editDoc', mdata: { doc: JSON.parse(e.currentTarget.dataset.edit) } }));
+  all('[data-vf]', 'click', e => {
+    e.stopPropagation();
+    const doc = S.results?.hits?.[+e.currentTarget.dataset.vi]?.document || {};
+    const field = e.currentTarget.dataset.vf;
+    set({ modal: 'fieldView', mdata: { field, value: doc[field], doc, md: false, expanded: false } });
+  });
   all('[data-del]',  'click', e => confirm(`Delete document "${e.currentTarget.dataset.del}"?`) && delDoc(e.currentTarget.dataset.del));
 
   all('[data-del-coll]', 'click', e => delColl(e.currentTarget.dataset.delColl));
@@ -1317,6 +1448,15 @@ const bindEvents = () => {
   on($('mc'),      'click', closeModal);
   on($('mcancel'), 'click', closeModal);
   on($('overlay'), 'click', e => e.target.id === 'overlay' && closeModal());
+
+  on($('fv-plain'),  'click', () => set({ mdata: { ...S.mdata, md: false } }));
+  on($('fv-md'),     'click', () => set({ mdata: { ...S.mdata, md: true } }));
+  on($('fv-expand'), 'click', () => set({ mdata: { ...S.mdata, expanded: true } }));
+  on($('fv-copy'),   'click', () => {
+    const v = S.mdata.value;
+    const text = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+    navigator.clipboard?.writeText(text).then(() => toast('Copied to clipboard', 'ok'), () => toast('Copy failed', 'err'));
+  });
 
   on($('msave'),          'click', () => upsertDoc($('doc-json')?.value || ''));
   on($('mcreate-coll'),   'click', () => createColl($('schema-json')?.value || ''));
