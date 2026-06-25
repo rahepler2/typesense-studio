@@ -506,6 +506,7 @@ const API = {
   get:   p      => API.req('GET',    p),
   post:  (p, b) => API.req('POST',   p, b),
   put:   (p, b) => API.req('PUT',    p, b),
+  patch: (p, b) => API.req('PATCH',  p, b),
   del:   p      => API.req('DELETE', p),
   safe:  p      => API.get(p).catch(() => null),
 
@@ -526,6 +527,7 @@ const S = {
   activeConnName: '',      
   collections: [], aliases: [], apiKeys: [],
   synonyms: null, synonymsLoading: false,
+  synonymsApi: '', synonymTargetSet: '',
   health: null, stats: null,
 
   nav: null, tab: 'browse',
@@ -670,7 +672,7 @@ const disconnect = () => {
 };
 
 async function selectColl(name) {
-  set({ nav: name, tab: 'browse', query: '', results: null, page: 1, synonyms: null, synonymsLoading: false });
+  set({ nav: name, tab: 'browse', query: '', results: null, page: 1, synonyms: null, synonymsLoading: false, synonymsApi: '', synonymTargetSet: '' });
   await doSearch();
 }
 
@@ -732,29 +734,80 @@ async function delAlias(name) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+// Typesense v30 replaced the per-collection synonyms API
+// (/collections/{name}/synonyms) with a global "synonym sets" API
+// (/synonym_sets/{set}/items/{id}). We detect which one the server speaks and
+// adapt. In v30+, a collection's synonyms live in the set(s) listed on its
+// `synonym_sets` schema field (migrated data lands in `{name}_synonyms_index`).
 async function loadSynonyms(name) {
   if (!name || name.startsWith('__')) return;
   set({ synonymsLoading: true });
+
+  // Probe the new global API. If it 404s, the server is pre-v30 → legacy path.
+  let known = null;
+  try {
+    const listed = await API.get('/synonym_sets');
+    known = (Array.isArray(listed) ? listed : (listed?.synonym_sets || [])).map(s => s?.name || s).filter(Boolean);
+  } catch { known = null; }
+
+  if (known !== null) {
+    try {
+      const coll = S.collections.find(c => c.name === name);
+      let setNames = Array.isArray(coll?.synonym_sets) ? coll.synonym_sets.slice() : [];
+      if (!setNames.length) setNames = [`${name}_synonyms_index`, name].filter(n => known.includes(n));
+      const sets = [];
+      for (const sn of setNames) {
+        const s = await API.safe(`/synonym_sets/${encodeURIComponent(sn)}`);
+        if (s) sets.push(s);
+      }
+      const items = sets.flatMap(s => (s.items || s.synonyms || []).map(it => ({ ...it, _set: s.name || setNames[0] })));
+      set({
+        synonyms: items, synonymsApi: 'sets',
+        synonymTargetSet: setNames[0] || `${name}_synonyms_index`,
+        synonymsLoading: false,
+      });
+    } catch (e) { set({ synonyms: [], synonymsLoading: false }); toast(e.message, 'err'); }
+    return;
+  }
+
+  // Legacy per-collection API (Typesense ≤ v29).
   try {
     const r = await API.get(`/collections/${encodeURIComponent(name)}/synonyms`);
-    set({ synonyms: r?.synonyms || [], synonymsLoading: false });
+    set({ synonyms: r?.synonyms || [], synonymsApi: 'legacy', synonymTargetSet: '', synonymsLoading: false });
   } catch (e) { set({ synonyms: [], synonymsLoading: false }); toast(e.message, 'err'); }
 }
 
 async function createSynonym(id, root, words) {
+  const body = root ? { root, synonyms: words } : { synonyms: words };
   try {
-    const body = root ? { root, synonyms: words } : { synonyms: words };
-    await API.put(`/collections/${encodeURIComponent(S.nav)}/synonyms/${encodeURIComponent(id)}`, body);
+    if (S.synonymsApi === 'sets') {
+      const setName = S.synonymTargetSet || `${S.nav}_synonyms_index`;
+      await API.put(`/synonym_sets/${encodeURIComponent(setName)}/items/${encodeURIComponent(id)}`, body);
+      // Ensure the collection is actually linked to this set so it takes effect.
+      const coll = S.collections.find(c => c.name === S.nav);
+      const linked = Array.isArray(coll?.synonym_sets) ? coll.synonym_sets : [];
+      if (!linked.includes(setName)) {
+        await API.patch(`/collections/${encodeURIComponent(S.nav)}`, { synonym_sets: [...linked, setName] }).catch(() => {});
+        try { set({ collections: await API.get('/collections') }); } catch {}
+      }
+    } else {
+      await API.put(`/collections/${encodeURIComponent(S.nav)}/synonyms/${encodeURIComponent(id)}`, body);
+    }
     set({ modal: null });
     await loadSynonyms(S.nav);
     toast(`Synonym "${id}" saved`, 'ok');
   } catch (e) { toast(e.message, 'err'); }
 }
 
-async function delSynonym(id) {
+async function delSynonym(id, setName) {
   if (!confirm(`Delete synonym "${id}"?`)) return;
   try {
-    await API.del(`/collections/${encodeURIComponent(S.nav)}/synonyms/${encodeURIComponent(id)}`);
+    if (S.synonymsApi === 'sets') {
+      const set = setName || S.synonymTargetSet || `${S.nav}_synonyms_index`;
+      await API.del(`/synonym_sets/${encodeURIComponent(set)}/items/${encodeURIComponent(id)}`);
+    } else {
+      await API.del(`/collections/${encodeURIComponent(S.nav)}/synonyms/${encodeURIComponent(id)}`);
+    }
     await loadSynonyms(S.nav);
     toast(`Synonym "${id}" deleted`, 'ok');
   } catch (e) { toast(e.message, 'err'); }
@@ -1202,7 +1255,11 @@ const buildSynonyms = coll => {
   <div class="ph">
     <div>
       <div class="ph-title">${hi('arrowsRightLeft')} Synonyms</div>
-      <div class="ph-meta">Search-time word equivalences for <strong>${esc(coll.name)}</strong></div>
+      <div class="ph-meta">
+        <span>Search-time word equivalences for <strong>${esc(coll.name)}</strong></span>
+        ${S.synonymsApi === 'sets' && S.synonymTargetSet
+          ? `<span class="ph-dot"></span><span>set: <code>${esc(S.synonymTargetSet)}</code></span>` : ''}
+      </div>
     </div>
     <button class="btn btn-primary btn-sm" id="btn-new-synonym">${hi('plus')} Add Synonym</button>
   </div>
@@ -1230,7 +1287,7 @@ const buildSynonyms = coll => {
                 ${(s.synonyms||[]).map(w=>`<span class="badge bz">${esc(w)}</span>`).join('')}
               </div></td>
               <td style="text-align:right">
-                <button class="btn btn-dg btn-xs" data-del-synonym="${esc(s.id)}">${hi('trash','',14)} Delete</button>
+                <button class="btn btn-dg btn-xs" data-del-synonym="${esc(s.id)}" data-syn-set="${esc(s._set||'')}">${hi('trash','',14)} Delete</button>
               </td>
             </tr>`).join('')}
           </tbody>
@@ -1549,7 +1606,7 @@ const bindEvents = () => {
   all('[data-del-alias]', 'click', e => delAlias(e.currentTarget.dataset.delAlias));
 
   on($('btn-new-synonym'), 'click', () => set({ modal: 'newSynonym', mdata: {} }));
-  all('[data-del-synonym]', 'click', e => delSynonym(e.currentTarget.dataset.delSynonym));
+  all('[data-del-synonym]', 'click', e => delSynonym(e.currentTarget.dataset.delSynonym, e.currentTarget.dataset.synSet));
 
   on($('btn-load-keys'), 'click', async () => {
     try { const r = await API.get('/keys'); set({ apiKeys: r?.keys || [] }); }
