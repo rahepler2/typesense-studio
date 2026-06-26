@@ -114,7 +114,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--tx);height:100vh;d
 .stat-unit{font-size:.875rem;font-weight:400;color:var(--tx3);}
 
 /* ─── Table ──────────────────────────────────────────────── */
-.tbl-wrap{border:1px solid var(--bd);border-radius:10px;overflow:hidden;box-shadow:var(--sh0);}
+.tbl-wrap{border:1px solid var(--bd);border-radius:10px;overflow-x:auto;overflow-y:hidden;box-shadow:var(--sh0);}
 table{width:100%;border-collapse:collapse;background:var(--sur);}
 thead{background:var(--g50);}
 th{padding:9px 14px;text-align:left;font-size:.6875rem;font-weight:600;text-transform:uppercase;letter-spacing:.065em;color:var(--tx3);border-bottom:1px solid var(--bd);white-space:nowrap;position:sticky;top:0;background:var(--g50);z-index:2;}
@@ -623,8 +623,8 @@ const fieldTypeLabel = (field, value) => {
 
 const qfields = name => {
   const c = S.collections.find(x => x.name === name);
-  const sf = (c?.fields || []).filter(f => ['string','string[]'].includes(f.type) && f.index !== false).map(f => f.name);
-  return sf.slice(0, 3).join(',') || 'id';
+  const sf = (c?.fields || []).filter(f => ['string','string[]'].includes(f.type) && f.index !== false && f.name !== '.*').map(f => f.name);
+  return sf.join(',') || 'id';
 };
 
 async function doConnect({ host, port, key, protocol }) {
@@ -1132,7 +1132,11 @@ const buildBrowse = coll => {
   const total = S.results?.found || 0;
   const pg    = S.page, ppg = 20;
   const pages = Math.max(1, Math.ceil(total / ppg));
-  const cols  = (coll?.fields || []).slice(0, 7).map(f => f.name);
+  const fields = (coll?.fields || []).filter(f => f.name !== '.*');
+  const cols  = fields.map(f => f.name);
+  const sortable = fields.filter(f =>
+    f.index !== false && (f.sort === true || ['int32','int64','float','bool'].includes(f.type))
+  ).map(f => f.name);
 
   return `
 <div class="scroll">
@@ -1141,10 +1145,10 @@ const buildBrowse = coll => {
       <div class="sico">${hi('magnifyingGlass')}</div>
       <input class="sinp" id="si" placeholder="Search documents…   press Enter" value="${S.query}">
     </div>
-    ${cols.length ? `
+    ${sortable.length ? `
     <select class="sel" id="sf" style="width:140px">
       <option value="">Sort by…</option>
-      ${cols.map(f=>`<option value="${esc(f)}" ${S.sortField===f?'selected':''}>${esc(f)}</option>`).join('')}
+      ${sortable.map(f=>`<option value="${esc(f)}" ${S.sortField===f?'selected':''}>${esc(f)}</option>`).join('')}
     </select>
     <select class="sel" id="sd" style="width:90px">
       <option value="asc"  ${S.sortDir==='asc' ?'selected':''}>ASC ↑</option>
